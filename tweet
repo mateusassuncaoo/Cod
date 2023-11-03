@@ -1,0 +1,611 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import nltk
+import re
+import spacy
+import pickle
+import sklearn
+import numpy as np
+
+from sklearn.utils import resample
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn import metrics
+from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score
+from mlxtend.evaluate import confusion_matrix
+from mlxtend.plotting import plot_confusion_matrix
+from collections import Counter
+from wordcloud import WordCloud
+from matplotlib.lines import Line2D
+
+# Vetorizadores
+from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.feature_extraction.text import TfidfTransformer
+
+# Classificadores
+from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import PassiveAggressiveClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import SGDClassifier
+from sklearn.svm import SVC
+from sklearn.naive_bayes import MultinomialNB
+
+# Avaliador
+from sklearn.model_selection import cross_val_predict
+
+# Tokenização especial para tweets
+from nltk.tokenize import TweetTokenizer
+
+import logging
+logging.disable(logging.WARNING)  # Isso desativará todas as mensagens de nível WARNING e acima.
+
+treino = pd.read_csv('Treino.csv')
+treino.info()
+
+teste = pd.read_csv('Teste.csv')
+teste.info()
+
+treino['classificacao'].value_counts()
+
+sns.countplot(x=treino.classificacao)
+plt.xlabel('Sentimento')
+plt.ylabel('Tweets')
+plt.show();
+# 0: Negativo; 1: Neutro; 2: Positivo
+
+def remove_caracteres(instancia):
+    ''' 
+    Função de remoção de caracteres:
+    'http\S+' - remove url 
+    lower() - tranforma o texto em minúsculo
+    '[0-9]+' - remove números
+    '[^\w\s]' -  remove pontuação
+    '[!#$%^&*()]' - remove caractéres espaciais
+    '''
+    instancia = re.sub(r'http\S+', '', instancia).lower()
+    instancia = re.sub(r'[0-9]+', '', instancia)
+    instancia = re.sub(r'[^\w\s]', '', instancia)
+    instancia = re.sub('[!#$%^&*()]', '', instancia)
+    stopwords = set(nltk.corpus.stopwords.words('portuguese'))
+    palavras = [i for i in instancia.split() if not i in stopwords]
+    return (' '.join(palavras))
+
+def remove_emojis(string):
+    '''Função que remove emojis'''
+    emoji_pattern = re.compile("["
+                                u"\U0001F600-\U0001F64F"  # emoticons
+                                u"\U0001F300-\U0001F5FF"  # symbols & pictographs
+                                u"\U0001F680-\U0001F6FF"  # transport & map symbols
+                                u"\U0001F1E0-\U0001F1FF"  # flags (iOS)
+                                u"\U00002500-\U00002BEF"  # chinese char
+                                u"\U00002702-\U000027B0"
+                                u"\U00002702-\U000027B0"
+                                u"\U000024C2-\U0001F251"
+                                u"\U0001f926-\U0001f937"
+                                u"\U00010000-\U0010ffff"
+                                u"\u2640-\u2642"
+                                u"\u2600-\u2B55"
+                                u"\u200d"
+                                u"\u23cf"
+                                u"\u23e9"
+                                u"\u231a"
+                                u"\ufe0f"  # dingbats
+                                u"\u3030"
+                                "]+", flags=re.UNICODE)
+    return emoji_pattern.sub(r'', string)
+
+# aplicando a limpeza dos dados
+treino['text_clean'] = treino['text'].apply(remove_caracteres).apply(remove_emojis)
+
+pd.set_option('display.max_colwidth', None)
+treino.head()
+
+# aplicando a limpeza dos dados
+teste['text_clean'] = teste['text'].apply(remove_caracteres).apply(remove_emojis)
+
+pd.set_option('display.max_colwidth', None)
+teste.head()
+
+nlp = spacy.load('pt_core_news_sm')
+
+treino['text_lemma'] = treino['text_clean'].apply(lambda row: " ".join([w.lemma_ for w in nlp(row)]))
+treino['text_lemma'] = treino['text_lemma'].apply(remove_caracteres)
+treino.head()
+
+teste['text_lemma'] = teste['text_clean'].apply(lambda row: " ".join([w.lemma_ for w in nlp(row)]))
+teste['text_lemma'] = teste['text_lemma'].apply(remove_caracteres)
+teste.head()
+
+# separando apenas as variáveis que quero visualizar
+'''tweet_df = df[['text','trend_t','sentiment']]
+tweet_df.head()'''
+
+# criando a lista sentimentos (com as quantidades das classes)
+sentimentos = []
+sentimentos.append(treino.loc[treino['classificacao'] == 0]['classificacao'].count())
+sentimentos.append(treino.loc[treino['classificacao'] == 1]['classificacao'].count())
+sentimentos.append(treino.loc[treino['classificacao'] == 2]['classificacao'].count())
+
+sentimentos
+
+# colacando a lista sentimento em ordem (minoria, meio, maioria)
+sentimentos.sort()
+sentimentos
+
+# instanciando as classes de sentimentos
+sent = [0, 0, 0]
+for i in range(len(sentimentos)):
+    for j in range(len(sentimentos)):
+        if sentimentos[i] == treino.loc[treino['classificacao'] == j]['classificacao'].count():
+            sent[i] = treino.loc[treino['classificacao'] == j]
+
+minoria = sent[0]
+meio = sent[1]
+maioria = sent[2]
+
+print('Maioria \n{}\n'.format(maioria['classificacao'].count()))
+print('Meio \n{}\n'.format(meio['classificacao'].count()))
+print('Minoria \n{}'.format(minoria['classificacao'].count()))
+
+menor_maior = resample(minoria, replace=True, n_samples=len(maioria), random_state=123)
+meio_maior = resample(meio, replace=True, n_samples=len(maioria), random_state=123)
+
+print(menor_maior.count(), meio_maior.count(), maioria.count())
+
+# juntando os dataframes
+treino_equilibrado_maior = pd.concat([menor_maior, meio_maior, maioria])
+
+# resetando o index
+treino_equilibrado_maior = treino_equilibrado_maior.reset_index()
+
+# removendo as colunas Unnamed: 0 e index
+treino_equilibrado_maior.drop(columns=['index'], inplace=True)
+
+treino_equilibrado_maior.groupby(['classificacao']).count()
+
+# Tokenização especial para tweets
+tweet_tokenizer = TweetTokenizer()
+
+def escolher_pipeline(pipe):
+    ''' Função para escolher os pipelines dos modelos a serem treinados '''
+    
+    if(pipe == 1):
+        modelo1 = Pipeline([
+            ('countVectorizer', CountVectorizer(analyzer='word', tokenizer=tweet_tokenizer.tokenize)),
+            ('modelo', LogisticRegression(C= 10.0, penalty= 'l1', solver='liblinear'))
+        ])
+        return modelo1
+    
+    elif(pipe == 2):
+        modelo2 = Pipeline([
+            ('tfidfVectorizer', TfidfVectorizer(analyzer='word', tokenizer=tweet_tokenizer.tokenize)),
+            ('modelo', LogisticRegression(C= 10.0, penalty= 'l1', solver='liblinear'))
+        ])
+        return modelo2
+    
+    elif(pipe == 3):
+        modelo3 = Pipeline([
+            ('countVectorizer', CountVectorizer(analyzer='word', tokenizer=tweet_tokenizer.tokenize)),
+            ('modelo', PassiveAggressiveClassifier(C= 0.003, loss= 'squared_hinge'))
+        ])
+        return modelo3
+    
+    elif(pipe == 4):
+        modelo4 = Pipeline([
+            ('tfidfVectorizer', TfidfVectorizer(analyzer='word', tokenizer=tweet_tokenizer.tokenize)),
+            ('modelo', PassiveAggressiveClassifier(C= 0.01, loss= 'squared_hinge'))
+        ])
+        return modelo4
+    
+    elif(pipe == 5):
+        modelo5 = Pipeline([
+            ('countVectorizer', CountVectorizer(analyzer='word', tokenizer=tweet_tokenizer.tokenize)),
+            ('modelo', RandomForestClassifier(n_estimators= 10))
+        ])
+        return modelo5
+    
+    elif(pipe == 6):
+        modelo6 = Pipeline([
+            ('tfidfVectorizer', TfidfVectorizer(analyzer='word', tokenizer=tweet_tokenizer.tokenize)),
+            ('modelo', RandomForestClassifier(n_estimators= 10))
+        ])
+        return modelo6
+    
+    elif(pipe == 7):
+        modelo7 = Pipeline([
+            ('countVectorizer', CountVectorizer(analyzer='word', tokenizer=tweet_tokenizer.tokenize)),
+            ('modelo', SGDClassifier(alpha= 0.0001, loss= 'hinge', penalty= 'elasticnet', max_iter=1000))
+        ])
+        return modelo7
+    
+    elif(pipe == 8):
+        modelo8 = Pipeline([
+            ('tfidfVectorizer', TfidfVectorizer(analyzer='word', tokenizer=tweet_tokenizer.tokenize)),
+            ('modelo', SGDClassifier(alpha= 0.0001, loss= 'modified_huber', penalty= 'elasticnet', max_iter=1000))
+        ])
+        return modelo8
+    
+    elif(pipe == 9):
+        modelo9 = Pipeline([
+            ('countVectorizer', CountVectorizer(analyzer='word', tokenizer=tweet_tokenizer.tokenize)),
+            ('modelo', SVC(C= 10, gamma= 0.1, kernel= 'rbf'))
+        ])
+        return modelo9
+    
+    elif(pipe == 10):
+        modelo10 = Pipeline([
+            ('tfidfVectorizer', TfidfVectorizer(analyzer='word', tokenizer=tweet_tokenizer.tokenize)),
+            ('modelo', SVC(C= 10, gamma= 1, kernel= 'rbf'))
+        ])
+        return modelo10
+        
+    elif(pipe == 11):
+        modelo11 = Pipeline([
+            ('countVectorizer', CountVectorizer(analyzer='word', tokenizer=tweet_tokenizer.tokenize)),
+            ('modelo', MultinomialNB(alpha=1.0))
+        ])
+        return modelo11
+    
+    elif(pipe == 12):
+        modelo12 = Pipeline([
+            ('tfidfVectorizer', TfidfVectorizer(analyzer='word', tokenizer=tweet_tokenizer.tokenize)),
+            ('modelo', MultinomialNB(alpha=1.0))
+        ])
+        return modelo12
+
+def matriz_confusao(y_test, modelo_predicao):
+    ''' Função que exibe a matrix de confusão para avalização do modelo '''
+    
+    # imprimir relatório de classificação
+    print("Relatório de Classificação:\n", 
+            metrics.classification_report(y_test, modelo_predicao))
+    
+    # imprimir a acurácia do modelo
+    print("Acurácia: {:.4f}\n".format(accuracy_score(y_test, modelo_predicao)))
+    
+    # imprimir a matrix de confusão
+    print("Matrix de confusão:\n", pd.crosstab(y_test, modelo_predicao, 
+                                                rownames=['Real'], 
+                                                colnames=['Predito'], 
+                                                margins=True),  '')
+    
+    # plotar a matrix de confusão
+    cm = confusion_matrix(y_target = y_test, 
+                            y_predicted = modelo_predicao, binary=False)
+    fig, ax = plot_confusion_matrix(conf_mat = cm)
+    plt.show()
+    print('\n')
+
+X = treino_equilibrado_maior['text_lemma']
+y = treino_equilibrado_maior['classificacao']
+
+X.shape, y.shape
+
+#separando os dados em treino e teste
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25, random_state=123)
+X_train.shape, y_train.shape, X_test.shape, y_test.shape
+
+reports=[]
+modelos=[]
+
+for i in range(1,13):
+    modelo = escolher_pipeline(i)
+    nome = (str(modelo))# nome do modelo
+    modelo = modelo.fit(X_train, y_train)
+    modelo_pred = modelo.predict(X_test)
+    
+    #relatório
+    reports.append(metrics.classification_report(y_test, modelo_pred, output_dict=True))
+    modelos.append(nome)
+    
+    print("*"*132)
+    print(f"Modelo: {nome}\n")
+    print("AVALIANDO O MODELO\n")
+    matriz_confusao(y_test, modelo_pred)
+    
+    print('\nVALIDAÇÃO CRUZADA\n')
+    validacao_cruzada = cross_val_predict(modelo, X, y, cv=10)
+    matriz_confusao(y, validacao_cruzada)
+
+# criando o dataframe para o relatório consolidado
+columns = ['modelo', 'f1_score', 'accuracy']
+report_df = pd.DataFrame(columns=columns)
+
+# loop para criação do relátorio consolidado
+for i in range(len(reports)):
+    report_df.loc[i] = [modelos[i],
+                    round(reports[i]['weighted avg']['f1-score'], 2), 
+                    round(reports[i]['accuracy'], 2)]
+
+def formatar_nome_modelo(modelo):
+    ''' Função que formata o nome do modelo junto com o vetorizador '''
+    vec = modelo[18:33] #nome do vetorizador
+    
+    start_name = (modelo.rfind("modelo")+9) #início do nome do classificador
+    end_name = (modelo.rfind('(')) #fim do nome do classificador
+    
+    classif = modelo[start_name: end_name] #nome completo do classificador
+    return(f'{classif} - {vec}')
+
+report_df['modelo'] = report_df['modelo'].apply(formatar_nome_modelo)
+report_df.sort_values(by='accuracy', ascending=False)
+
+# instanciando o vetorizador
+tfidf_vect = TfidfVectorizer(analyzer='word', tokenizer=tweet_tokenizer.tokenize)
+X_train_counts = tfidf_vect.fit_transform(X_train)
+tfidf_transformer = TfidfTransformer()
+X_train_tfidf = tfidf_transformer.fit_transform(X_train_counts)
+
+# instanciando o modelo
+model =  SVC(C= 10, gamma= 1, kernel= 'rbf').fit(X_train_tfidf, y_train)
+
+# Save the vectorizer
+vec_file = 'vectorizer.pickle'
+pickle.dump(tfidf_vect, open(vec_file, 'wb'))
+
+# Save the model
+mod_file = 'classification.model'
+pickle.dump(model, open(mod_file, 'wb'))
+
+ # load the vectorizer
+loaded_vectorizer = pickle.load(open('vectorizer.pickle', 'rb'))
+
+# load the model
+loaded_model = pickle.load(open('classification.model', 'rb'))
+
+X = loaded_vectorizer.transform(teste['text_lemma'])
+
+predictions = loaded_model.predict(X)
+
+predictions
+
+result_df = pd.DataFrame({'Texto': teste['text_lemma'], 'Previsões': predictions, 'Data':teste['created_at']})
+result_df.to_csv('previsoes_SN.csv', index=False)
+
+result_df.to_excel('exemplo.xlsx', index=False)
+
+resultados = pd.read_csv('previsoes_SN.csv')
+
+resultados.head
+
+# Define a paleta de cores "muted" do Seaborn
+sns.set_palette("muted")
+
+# Obtenha as cores da paleta "muted" do Seaborn
+cores_muted = sns.color_palette("muted")
+
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from PIL import Image
+# Converta a coluna 'Data' para datetime
+resultados['Data'] = pd.to_datetime(resultados['Data'])
+
+# Extrai o ano de cada tweet
+resultados['Ano'] = resultados['Data'].dt.year
+
+# Crie um novo DataFrame excluindo o ano de 2023
+resultados_sem_ano_2023 = resultados[resultados['Ano'] != 2023].copy()
+
+# Agrupa por ano e sentimento e conta os tweets
+contagem_sentimento_ano = resultados_sem_ano_2023.groupby(['Ano', 'Previsões']).size().reset_index(name='contagem')
+
+# Exibe a tabela resultante
+print(contagem_sentimento_ano)
+
+tweets_por_mes = resultados_sem_ano_2023['Data'].dt.strftime('%m-%y').value_counts().sort_index().reset_index(name='counts')
+
+plt.figure(figsize=(40,10))
+ax = sns.barplot(x='Data',y='counts', data=tweets_por_mes,edgecolor = 'black',ci=False, palette='Blues_r')
+plt.title('Tweets Por Ano')
+plt.yticks([])
+for container in ax.containers:
+    ax.bar_label(container)
+plt.ylabel('Quantidade')
+plt.xlabel('Anos')
+
+# Exporte o gráfico para um arquivo de imagem
+plt.savefig('tweets_por_mes.png', dpi=800, bbox_inches='tight')
+
+plt.show()
+
+# Converta a coluna 'Data' para datetime
+resultados['Data'] = pd.to_datetime(resultados['Data'])
+
+# Extrai o ano de cada tweet
+resultados['Ano'] = resultados['Data'].dt.year
+
+# Crie um novo DataFrame excluindo o ano de 2023
+resultados_sem_ano_2023 = resultados[resultados['Ano'] != 2023].copy()
+
+resultados_sem_ano_2023['Mês'] = resultados_sem_ano_2023['Data'].dt.month
+
+# Agrupa por ano, mês e sentimento e conta os tweets
+contagem_sentimento_ano_mes = resultados_sem_ano_2023.groupby(['Ano', 'Mês', 'Previsões']).size().reset_index(name='contagem')
+
+# Exibe a tabela resultante
+print(contagem_sentimento_ano_mes)
+
+# Agrupe por ano para gerar gráficos separados
+anos = contagem_sentimento_ano_mes['Ano'].unique()
+
+# Dicionário para mapear números de mês para nomes de mês
+nomes_meses = {
+    1: 'Janeiro',
+    2: 'Fevereiro',
+    3: 'Março',
+    4: 'Abril',
+    5: 'Maio',
+    6: 'Junho',
+    7: 'Julho',
+    8: 'Agosto',
+    9: 'Setembro',
+    10: 'Outubro',
+    11: 'Novembro',
+    12: 'Dezembro'
+}
+
+# Dicionário para mapear rótulos da legenda
+rotulos_legenda = {0: 'Negativo', 1: 'Neutro', 2: 'Positivo'}
+
+# Paleta "muted" do seaborn
+cores_muted = sns.color_palette("muted")
+
+for ano in anos:
+    dados_ano = contagem_sentimento_ano_mes[contagem_sentimento_ano_mes['Ano'] == ano]
+    
+    # Mapeie os números de mês para os nomes dos meses
+    dados_ano['Mês'] = dados_ano['Mês'].map(nomes_meses)
+    
+    # Crie um gráfico para cada mês
+    plt.figure(figsize=(16, 10))
+    
+    ax = sns.barplot(x='Mês', y='contagem', data=dados_ano, hue='Previsões', palette=cores_muted)
+    
+    plt.title(f'Tweets Por Sentimento em {ano}')
+    plt.ylabel('Número de Tweets')
+    plt.xlabel('Mês')
+    
+    plt.xticks(rotation=0)
+    
+    # Personalize a legenda com rótulos e cores
+    custom_legend = [Line2D([0], [0], color=cores_muted[i], lw=4, label=label) for i, label in rotulos_legenda.items()]
+    plt.legend(handles=custom_legend)
+    
+    nome_arquivo = f"grafico_{ano}.png"
+    plt.savefig(nome_arquivo, dpi=800, bbox_inches='tight')
+    plt.close()  # Feche o gráfico para liberar memória
+    
+    plt.show()
+
+# Pivot para tornar os sentimentos em colunas
+pivot_df = contagem_sentimento_ano.pivot(index='Ano', columns='Previsões', values='contagem')
+
+# Preencha valores ausentes com 0 (caso não haja tweets de um determinado sentimento em um ano)
+pivot_df = pivot_df.fillna(0)
+
+sns.set_palette("muted")
+
+# Crie um gráfico de barras agrupadas
+fig, ax = plt.subplots(figsize=(10, 6))
+bar_width = 0.2
+index = np.arange(len(pivot_df.index))
+
+# Para cada sentimento, plote uma barra
+for i, sentimento in enumerate(pivot_df.columns):
+    ax.bar(index + i * bar_width, pivot_df[sentimento], bar_width, label=sentimento)
+
+# Personalize o gráfico
+plt.title('Contagem de Tweets por Sentimento e Ano (Barras Agrupadas)')
+plt.xlabel('Ano')
+plt.ylabel('Contagem de Tweets')
+plt.xticks(index + bar_width * (len(pivot_df.columns) / 2), pivot_df.index)
+plt.legend(title='Sentimento')
+
+# Exiba o gráfico
+plt.tight_layout()
+plt.show()
+
+resultados_sem_ano_2023['Mês'] = resultados_sem_ano_2023['Data'].dt.month
+
+# Agrupe os dados por ano e mês e conte a contagem de cada sentimento
+agrupado = resultados_sem_ano_2023.groupby(['Ano', 'Mês', 'Previsões']).size().unstack(fill_value=0)
+
+# Crie um gráfico de pizza para cada ano
+anos = resultados_sem_ano_2023['Ano'].unique()
+anos.sort()
+# Defina as cores automaticamente
+#cores = ['cornflowerblue', 'sandybrown', 'seagreen']
+# Dicionário para mapear números de mês para nomes de mês
+nomes_meses = {
+    1: 'Janeiro',
+    2: 'Fevereiro',
+    3: 'Março',
+    4: 'Abril',
+    5: 'Maio',
+    6: 'Junho',
+    7: 'Julho',
+    8: 'Agosto',
+    9: 'Setembro',
+    10: 'Outubro',
+    11: 'Novembro',
+    12: 'Dezembro'
+}
+
+# Defina o mês desejado para a legenda
+mes_desejado = 3  # Por exemplo, janeiro
+
+legendas_personalizadas = ['Negativo', 'Neutro', 'Positivo']
+
+# Loop pelos anos
+for ano in anos:
+    dados_ano = agrupado.loc[ano].dropna()  # Remova meses sem dados
+    meses = dados_ano.index
+    
+    fig, axs = plt.subplots(3, 4, figsize=(20, 14))
+    
+    for i, mes in enumerate(meses):
+        sentimento_counts = dados_ano.iloc[i]
+        sentimentos = sentimento_counts.index
+
+        # Filtra os sentimentos com porcentagem maior que zero
+        sentimentos = [s for s in sentimentos if sentimento_counts[s] > 0]
+        sentimento_counts = sentimento_counts[sentimento_counts > 0]
+
+        if len(sentimentos) == 0:
+            continue  # Não crie um gráfico de pizza vazio
+        
+        ax = axs[i // 4, i % 4]
+
+        pie = ax.pie(sentimento_counts, labels=sentimentos, colors=cores_muted, autopct=lambda p: '{:.1f}%'.format(p), textprops={'fontsize': 16},)
+
+        nome_mes = nomes_meses.get(mes, str(mes))
+        ax.set_title(nome_mes, loc='center', fontsize=18)
+        ax.axis('equal')
+
+        if mes == mes_desejado:
+            # Crie uma lista de rótulos personalizados
+            legendas_sentimento = legendas_personalizadas
+
+            # Atribua a lista personalizada à legenda
+            ax.legend(legendas_sentimento, title="Legenda de Sentimentos", fontsize=14, title_fontsize=16, bbox_to_anchor=(0.5, -2.4))
+    plt.suptitle(f'Distribuição de Sentimentos em {ano}', y=0.96, fontsize=22)
+
+ 
+    # Salve o gráfico do ano atual em um arquivo
+    nome_arquivo = f"pizza_{ano}.png"
+    plt.savefig(nome_arquivo, dpi=300, bbox_inches='tight')
+    plt.close()  # Feche o gráfico para liberar memória 
+
+# Combine todas as linhas da coluna "text" em um único texto
+texto = ' '.join(teste['text_lemma'])
+
+# Tokenize o texto em palavras
+palavras = texto.split()
+
+# Conte a frequência das palavras
+contagem_palavras = Counter(palavras)
+
+# Crie uma lista de palavras indesejadas que você deseja remover da nuvem de palavras
+palavras_indesejadas = ["setutr","onibu","portalgp","n","gt", "pra", "aqui","g","h","pq","tá","hoje","ainda","dia","dentro","sobre",
+                        "q","vai","r","ter","anos","agora","todo","tudo","andar","bem","pessoa","nada","gente","nesta","após","vou","gp","ver",
+                        "segundo","teresino","novo","ir","dizer","fazer","ficar","ano"]
+
+# Remova as palavras indesejadas da contagem de palavras
+for palavra in palavras_indesejadas:
+    contagem_palavras.pop(palavra, None)
+
+# Escolha o número específico de palavras mais frequentes que deseja incluir na nuvem de palavras (por exemplo, as 20 mais frequentes)
+numero_palavras_frequentes = 20
+palavras_frequentes = contagem_palavras.most_common(numero_palavras_frequentes)
+
+# Crie um objeto WordCloud usando as palavras mais frequentes
+nuvem_palavras = WordCloud(width=800, height=400, background_color='white').generate_from_frequencies(dict(palavras_frequentes))
+
+# Exiba a nuvem de palavras
+plt.figure(figsize=(10, 5),dpi=200)
+plt.imshow(nuvem_palavras, interpolation='bilinear')
+plt.axis("off")
+plt.show()
+
+nuvem_palavras.to_file("nuvem_de_palavras.png")
